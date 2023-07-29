@@ -1,7 +1,8 @@
 // axios配置  可自行根据项目进行更改，只需更改该文件即可，其他文件可以不动
-import type { AxiosInstance } from 'axios';
+import type { AxiosError, AxiosInstance } from 'axios';
 import isString from 'lodash/isString';
 import merge from 'lodash/merge';
+import { DialogPlugin } from 'tdesign-vue-next';
 
 import { ContentTypeEnum } from '@/constants';
 import { useUserStore } from '@/store';
@@ -15,8 +16,12 @@ const env = import.meta.env.MODE || 'development';
 // 如果是mock模式 或 没启用直连代理 就不配置host 会走本地Mock拦截 或 Vite 代理
 const host = env === 'mock' || import.meta.env.VITE_IS_REQUEST_PROXY !== 'true' ? '' : import.meta.env.VITE_API_URL;
 
+export const isRelogin = { show: false };
+
 // 数据处理，方便区分多种处理方式
 const transform: AxiosTransform = {
+  // TODO 后端数据格式遵循 https://github.com/microsoft/api-guidelines/blob/vNext/Guidelines.md，这里需要修改
+
   // 处理请求数据。如果数据不是预期格式，可直接抛出错误
   transformRequestHook: (res, options) => {
     const { isTransformResponse, isReturnNativeResponse } = options;
@@ -131,23 +136,46 @@ const transform: AxiosTransform = {
   },
 
   // 响应错误处理
-  responseInterceptorsCatch: (error: any, instance: AxiosInstance) => {
-    const { config } = error;
-    if (!config || !config.requestOptions.retry) return Promise.reject(error);
+  responseInterceptorsCatch: (error: AxiosError, _instance: AxiosInstance) => {
+    if (error.response.status === 401) {
+      if (!isRelogin.show) {
+        isRelogin.show = true;
+        DialogPlugin.confirm({
+          header: '系统提示',
+          body: '登录状态已过期，您可以继续留在该页面，或者重新登录',
+          cancelBtn: '取消',
+          confirmBtn: '重新登录',
+          theme: 'warning',
+          onConfirm: () => {
+            isRelogin.show = false;
+            useUserStore()
+              .logout()
+              .then(() => {
+                window.location.href = `${import.meta.env.VITE_APP_CONTEXT_PATH}index`;
+              });
+          },
+          onCancel: () => {
+            isRelogin.show = false;
+          },
+        });
+        return error;
+      }
+    }
 
-    config.retryCount = config.retryCount || 0;
+    return error; // FIXME 整体axios调用逻辑貌似有问题，正常 429 401 可以在这里处理
 
-    if (config.retryCount >= config.requestOptions.retry.count) return Promise.reject(error);
-
-    config.retryCount += 1;
-
-    const backoff = new Promise((resolve) => {
-      setTimeout(() => {
-        resolve(config);
-      }, config.requestOptions.retry.delay || 1);
-    });
-    config.headers = { ...config.headers, 'Content-Type': ContentTypeEnum.Json };
-    return backoff.then((config) => instance.request(config));
+    // const { config } = error;
+    // if (!config || !config.requestOptions.retry) return Promise.reject(error);
+    // config.retryCount = config.retryCount || 0;
+    // if (config.retryCount >= config.requestOptions.retry.count) return Promise.reject(error);
+    // config.retryCount += 1;
+    // const backoff = new Promise((resolve) => {
+    //   setTimeout(() => {
+    //     resolve(config);
+    //   }, config.requestOptions.retry.delay || 1);
+    // });
+    // config.headers = { ...config.headers, 'Content-Type': ContentTypeEnum.Json };
+    // return backoff.then((config) => instance.request(config));
   },
 };
 
@@ -193,10 +221,10 @@ function createAxios(opt?: Partial<CreateAxiosOptions>) {
           // 是否携带token
           withToken: true,
           // 重试
-          retry: {
-            count: 3,
-            delay: 1000,
-          },
+          // retry: {
+          //   count: 3,
+          //   delay: 1000,
+          // },
         },
       },
       opt || {},
